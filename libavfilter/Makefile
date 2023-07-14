@@ -173,6 +173,7 @@ OBJS-$(CONFIG_VIBRATO_FILTER)                += af_vibrato.o generate_wave_table
 OBJS-$(CONFIG_VIRTUALBASS_FILTER)            += af_virtualbass.o
 OBJS-$(CONFIG_VOLUME_FILTER)                 += af_volume.o
 OBJS-$(CONFIG_VOLUMEDETECT_FILTER)           += af_volumedetect.o
+OBJS-$(CONFIG_WAVEFORMDATA_FILTER)           += af_waveformdata.o
 
 OBJS-$(CONFIG_AEVALSRC_FILTER)               += aeval.o
 OBJS-$(CONFIG_AFDELAYSRC_FILTER)             += asrc_afdelaysrc.o

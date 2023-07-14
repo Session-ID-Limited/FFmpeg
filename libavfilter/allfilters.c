@@ -160,6 +160,7 @@ extern const AVFilter ff_af_vibrato;
 extern const AVFilter ff_af_virtualbass;
 extern const AVFilter ff_af_volume;
 extern const AVFilter ff_af_volumedetect;
+extern const AVFilter ff_af_waveformdata;
 
 extern const AVFilter ff_asrc_aevalsrc;
 extern const AVFilter ff_asrc_afdelaysrc;
