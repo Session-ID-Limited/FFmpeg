@@ -22,6 +22,7 @@
 
 #include "libavutil/ffmath.h"
 #include "libavutil/opt.h"
+#include "libavformat/avio.h"
 #include "audio.h"
 #include "avfilter.h"
 #include "internal.h"
@@ -38,13 +39,18 @@ typedef struct ChannelStats {
 
 typedef struct WaveFormDataContext {
     const AVClass *class;
-    ChannelStats *chstats;
-    int nb_channels;
-    int64_t tc_samples;
+
     double time_constant;
     int split_channels;
     int output_bits;
+    char *file_str;
+
+    AVIOContext* avio_context;
+    ChannelStats *chstats;
+    int nb_channels;
+    int64_t tc_samples;
     int64_t window_pos;
+    int64_t total_blocks;
 } WaveFormDataContext;
 
 #define OFFSET(x) offsetof(WaveFormDataContext, x)
@@ -56,6 +62,7 @@ static const AVOption waveformdata_options[] = {
     { "bits", "waveform data-point resolution", OFFSET(output_bits), AV_OPT_TYPE_INT, {.i64 = OUTPUT_BITS_16}, 0, OUTPUT_BITS_16, FLAGS, "bits" },
          { "8",  "8 bits", 0, AV_OPT_TYPE_CONST, {.i64=OUTPUT_BITS_8},  .flags = FLAGS, .unit = "bits" },
          { "16", "16 bits", 0, AV_OPT_TYPE_CONST, {.i64=OUTPUT_BITS_16}, .flags = FLAGS, .unit = "bits" },
+    { "file", "set file for waveform data", OFFSET(file_str), AV_OPT_TYPE_STRING, {.str=NULL}, 0, 0, FLAGS }, // FIXME: should it be required?
     { NULL }
 };
 
@@ -71,36 +78,51 @@ static int config_output(AVFilterLink *outlink)
     s->nb_channels = outlink->ch_layout.nb_channels;
     s->tc_samples = lrint(s->time_constant * outlink->sample_rate);
     s->window_pos = 0;
+    s->total_blocks = 0;
+
+    if (s->avio_context) {
+        // write file headers
+        // 32b: version 1|2
+        avio_wl32(s->avio_context, s->split_channels ? 2 : 1);
+        // 32b: flags
+        avio_wl32(s->avio_context, s->output_bits == OUTPUT_BITS_8 ? 1 : 0);
+        // 32b: sample rate
+        avio_wl32(s->avio_context, outlink->sample_rate);
+        // 32b: samples per pixel
+        avio_wl32(s->avio_context, s->tc_samples);
+        // 32b: data-point count (size), to be filled in `uninit`
+        avio_wl32(s->avio_context, 0);
+        // 32b: channel count (if split_channels)
+        if (s->split_channels)
+            avio_wl32(s->avio_context, s->nb_channels);
+    }
 
     return 0;
 }
 
-static void write_data_point(AVFilterContext *ctx, float min, float max)
+static void write_data_point(WaveFormDataContext *s, float min, float max)
 {
-    WaveFormDataContext *s = ctx->priv;
-
-    if (s->output_bits == OUTPUT_BITS_16) {
-        int16_t min_shrt = (int16_t)lrint(min * SHRT_MAX);
-        int16_t max_shrt = (int16_t)lrint(max * SHRT_MAX);
-        av_log(ctx, AV_LOG_INFO, "Write: Min: %d Max: %d\n", min_shrt, max_shrt);
-    } else {
-        int8_t min_b = (int8_t)lrint(min * CHAR_MAX);
-        int8_t max_b = (int8_t)lrint(max * CHAR_MAX);
-        av_log(ctx, AV_LOG_INFO, "Write: Min: %d Max: %d\n", min_b, max_b);
+    // FIXME: make this a function pointer in `s` using 3 functions: 16bit, 8bit, NOOP (or 2 if file opt is required)
+    if (s->avio_context) {
+        if (s->output_bits == OUTPUT_BITS_16) {
+            avio_wl16(s->avio_context, (int16_t)roundf(min * SHRT_MAX));
+            avio_wl16(s->avio_context, (int16_t)roundf(max * SHRT_MAX));
+        } else {
+            avio_w8(s->avio_context, (int8_t)roundf(min * CHAR_MAX));
+            avio_w8(s->avio_context, (int8_t)roundf(max * CHAR_MAX));
+        }
     }
 }
 
-static void finish_block(AVFilterContext *ctx)
+static void finish_block(WaveFormDataContext *s)
 {
-    WaveFormDataContext *s = ctx->priv;
     const int channels = s->nb_channels;
     float min_sum = 0, max_sum = 0;
 
     for (int c = 0; c < channels; c++) {
         ChannelStats *p = &s->chstats[c];
-        av_log(ctx, AV_LOG_INFO, "Channel %d: Min: %g Max: %g\n", c + 1, p->min, p->max);
         if (s->split_channels)
-            write_data_point(ctx, p->min, p->max);
+            write_data_point(s, p->min, p->max);
         else {
             min_sum += p->min;
             max_sum += p->max;
@@ -109,8 +131,9 @@ static void finish_block(AVFilterContext *ctx)
         p->max = 0;
     }
     if (!s->split_channels)
-        write_data_point(ctx, min_sum / channels, max_sum / channels);
+        write_data_point(s, min_sum / channels, max_sum / channels);
     s->window_pos = 0;
+    s->total_blocks++;
 }
 
 static void update_stat(WaveFormDataContext *s, ChannelStats *p, float sample)
@@ -129,19 +152,19 @@ static int filter_frame(AVFilterLink *inlink, AVFrame *buf)
 
     switch (inlink->format) {
     case AV_SAMPLE_FMT_FLTP:
-        for (int proc_samples = 0; proc_samples < buf->nb_samples; proc_samples += s->tc_samples) {
-            int window_end = av_clip(proc_samples + s->tc_samples, 0, buf->nb_samples);
+        for (int proc_smpl = 0; proc_smpl < buf->nb_samples; proc_smpl += s->tc_samples) {
+            int window_end = av_clip(proc_smpl + s->tc_samples, 0, buf->nb_samples);
 
             for (int c = 0; c < channels; c++) {
                 ChannelStats *p = &s->chstats[c];
-                const float *src = ((const float *)buf->extended_data[c]) + proc_samples;
+                const float *src = ((const float *)buf->extended_data[c]) + proc_smpl;
 
-                for (int i = proc_samples; i < window_end; i++, src++)
+                for (int i = proc_smpl; i < window_end; i++, src++)
                     update_stat(s, p, *src);
             }
-            s->window_pos = window_end - proc_samples;
+            s->window_pos = window_end - proc_smpl;
             if (s->window_pos == s->tc_samples)
-                finish_block(ctx);
+                finish_block(s);
         }
         break;
     case AV_SAMPLE_FMT_FLT: {
@@ -152,7 +175,7 @@ static int filter_frame(AVFilterLink *inlink, AVFrame *buf)
                 update_stat(s, &s->chstats[c], *src);
             s->window_pos++;
             if (s->window_pos == s->tc_samples)
-                finish_block(ctx);
+                finish_block(s);
         }}
         break;
     }
@@ -160,12 +183,39 @@ static int filter_frame(AVFilterLink *inlink, AVFrame *buf)
     return ff_filter_frame(inlink->dst->outputs[0], buf);
 }
 
+static av_cold int init(AVFilterContext *ctx)
+{
+    WaveFormDataContext *s = ctx->priv;
+
+    s->avio_context = NULL;
+    if (s->file_str) {
+        int ret = avio_open(&s->avio_context, s->file_str, AVIO_FLAG_WRITE);
+
+        if (ret < 0) {
+            char buf[128];
+            av_strerror(ret, buf, sizeof(buf));
+            av_log(ctx, AV_LOG_ERROR, "Could not open %s: %s\n",
+                   s->file_str, buf);
+            return ret;
+        }
+    }
+
+    return 0;
+}
+
 static av_cold void uninit(AVFilterContext *ctx)
 {
     WaveFormDataContext *s = ctx->priv;
 
     if (s->window_pos != 0)
-        finish_block(ctx);
+        finish_block(s);
+    if (s->avio_context) {
+        // write total block count in headers (5th field after 4x32b)
+        avio_seek(s->avio_context, 4 * 4, SEEK_SET);
+        avio_wl32(s->avio_context, (uint32_t)s->total_blocks);
+        avio_closep(&s->avio_context);
+    }
+
     av_freep(&s->chstats);
 }
 
@@ -190,6 +240,7 @@ const AVFilter ff_af_waveformdata = {
     .description   = NULL_IF_CONFIG_SMALL("Generate peaks.js compatible waveform data file."),
     .priv_size     = sizeof(WaveFormDataContext),
     .priv_class    = &waveformdata_class,
+    .init          = init,
     .uninit        = uninit,
     .flags         = AVFILTER_FLAG_METADATA_ONLY,
     FILTER_INPUTS(waveformdata_inputs),
