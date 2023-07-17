@@ -41,7 +41,6 @@ typedef struct WaveFormDataContext {
     const AVClass *class;
 
     double time_constant;
-    int split_channels;
     int output_bits;
     char *file_str;
 
@@ -57,8 +56,7 @@ typedef struct WaveFormDataContext {
 #define FLAGS AV_OPT_FLAG_AUDIO_PARAM|AV_OPT_FLAG_FILTERING_PARAM
 
 static const AVOption waveformdata_options[] = {
-    { "length", "set the window length", OFFSET(time_constant), AV_OPT_TYPE_DOUBLE, {.dbl=3}, .01, 100, FLAGS }, // FIXME: min/max/default to match audiowaveform?
-    { "split_chan", "output multi-channel waveform data", OFFSET(split_channels), AV_OPT_TYPE_BOOL, { .i64 = 0 }, 0, 1, FLAGS },
+    { "length", "set the window length", OFFSET(time_constant), AV_OPT_TYPE_DOUBLE, {.dbl=3}, .01, 100, FLAGS }, // FIXME: min/max/default to match audiowaveform, also mut excl option for setting window length in samples?
     { "bits", "waveform data-point resolution", OFFSET(output_bits), AV_OPT_TYPE_INT, {.i64 = OUTPUT_BITS_16}, 0, OUTPUT_BITS_16, FLAGS, "bits" },
          { "8",  "8 bits", 0, AV_OPT_TYPE_CONST, {.i64=OUTPUT_BITS_8},  .flags = FLAGS, .unit = "bits" },
          { "16", "16 bits", 0, AV_OPT_TYPE_CONST, {.i64=OUTPUT_BITS_16}, .flags = FLAGS, .unit = "bits" },
@@ -83,7 +81,7 @@ static int config_output(AVFilterLink *outlink)
     if (s->avio_context) {
         // write file headers
         // 32b: version 1|2
-        avio_wl32(s->avio_context, s->split_channels ? 2 : 1);
+        avio_wl32(s->avio_context, s->nb_channels > 1 ? 2 : 1);
         // 32b: flags
         avio_wl32(s->avio_context, s->output_bits == OUTPUT_BITS_8 ? 1 : 0);
         // 32b: sample rate
@@ -93,7 +91,7 @@ static int config_output(AVFilterLink *outlink)
         // 32b: data-point count (size), to be filled in `uninit`
         avio_wl32(s->avio_context, 0);
         // 32b: channel count (if split_channels)
-        if (s->split_channels)
+        if (s->nb_channels > 1)
             avio_wl32(s->avio_context, s->nb_channels);
     }
 
@@ -117,21 +115,13 @@ static void write_data_point(WaveFormDataContext *s, float min, float max)
 static void finish_block(WaveFormDataContext *s)
 {
     const int channels = s->nb_channels;
-    float min_sum = 0, max_sum = 0;
 
     for (int c = 0; c < channels; c++) {
         ChannelStats *p = &s->chstats[c];
-        if (s->split_channels)
-            write_data_point(s, p->min, p->max);
-        else {
-            min_sum += p->min;
-            max_sum += p->max;
-        }
+        write_data_point(s, p->min, p->max);
         p->min = 0;
         p->max = 0;
     }
-    if (!s->split_channels)
-        write_data_point(s, min_sum / channels, max_sum / channels);
     s->window_pos = 0;
     s->total_blocks++;
 }
