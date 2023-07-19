@@ -29,7 +29,8 @@
 
 enum OutputBits {
     OUTPUT_BITS_8,
-    OUTPUT_BITS_16
+    OUTPUT_BITS_16,
+    OUTPUT_BITS_NB
 };
 
 typedef struct ChannelStats {
@@ -56,8 +57,9 @@ typedef struct WaveFormDataContext {
 #define FLAGS AV_OPT_FLAG_AUDIO_PARAM|AV_OPT_FLAG_FILTERING_PARAM
 
 static const AVOption waveformdata_options[] = {
-    { "length", "set the window length", OFFSET(time_constant), AV_OPT_TYPE_DOUBLE, {.dbl=3}, .01, 100, FLAGS }, // FIXME: min/max/default to match audiowaveform, also mut excl option for setting window length in samples?
-    { "bits", "waveform data-point resolution", OFFSET(output_bits), AV_OPT_TYPE_INT, {.i64 = OUTPUT_BITS_16}, 0, OUTPUT_BITS_16, FLAGS, "bits" },
+    { "zoom_sec", "set the window length in seconds", OFFSET(time_constant), AV_OPT_TYPE_DOUBLE, {.dbl=3}, .01, 100, FLAGS }, // FIXME: min/max/default to match audiowaveform, also mut excl option for setting window length in samples?
+    { "zoom", "set the window length in samples (takes precedence over zoom_sec)", OFFSET(tc_samples), AV_OPT_TYPE_INT64, {.i64 = 0}, 0, INT64_MAX, FLAGS },
+    { "bits", "waveform data-point resolution", OFFSET(output_bits), AV_OPT_TYPE_INT, {.i64 = OUTPUT_BITS_16}, 0, OUTPUT_BITS_NB-1, FLAGS, "bits" },
          { "8",  "8 bits", 0, AV_OPT_TYPE_CONST, {.i64=OUTPUT_BITS_8},  .flags = FLAGS, .unit = "bits" },
          { "16", "16 bits", 0, AV_OPT_TYPE_CONST, {.i64=OUTPUT_BITS_16}, .flags = FLAGS, .unit = "bits" },
     { "file", "set file for waveform data", OFFSET(file_str), AV_OPT_TYPE_STRING, {.str=NULL}, 0, 0, FLAGS }, // FIXME: should it be required?
@@ -74,7 +76,8 @@ static int config_output(AVFilterLink *outlink)
     if (!s->chstats)
         return AVERROR(ENOMEM);
     s->nb_channels = outlink->ch_layout.nb_channels;
-    s->tc_samples = lrint(s->time_constant * outlink->sample_rate);
+    if (s->tc_samples == 0)
+        s->tc_samples = lrint(s->time_constant * outlink->sample_rate);
     s->window_pos = 0;
     s->total_blocks = 0;
 
