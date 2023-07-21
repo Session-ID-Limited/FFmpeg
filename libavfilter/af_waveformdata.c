@@ -145,8 +145,10 @@ static int filter_frame(AVFilterLink *inlink, AVFrame *buf)
 
     switch (inlink->format) {
     case AV_SAMPLE_FMT_FLTP:
-        for (int proc_smpl = 0; proc_smpl < buf->nb_samples; proc_smpl += s->tc_samples) {
-            int window_end = av_clip(proc_smpl + s->tc_samples, 0, buf->nb_samples);
+        for (int proc_smpl = 0; proc_smpl < buf->nb_samples;) {
+            int window_end =
+                FFMIN(proc_smpl + s->tc_samples - s->window_pos, buf->nb_samples);
+            int sample_cnt = window_end - proc_smpl;
 
             for (int c = 0; c < channels; c++) {
                 ChannelStats *p = &s->chstats[c];
@@ -155,9 +157,10 @@ static int filter_frame(AVFilterLink *inlink, AVFrame *buf)
                 for (int i = proc_smpl; i < window_end; i++, src++)
                     update_stat(s, p, *src);
             }
-            s->window_pos = window_end - proc_smpl;
+            s->window_pos += sample_cnt;
             if (s->window_pos == s->tc_samples)
                 finish_block(s);
+            proc_smpl += sample_cnt;
         }
         break;
     case AV_SAMPLE_FMT_FLT: {
