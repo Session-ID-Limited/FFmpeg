@@ -250,8 +250,12 @@ static int aiff_read_header(AVFormatContext *s)
             av_log(s, AV_LOG_WARNING, "header parser hit EOF\n");
             goto got_sound;
         }
-        if (size < 0)
+        if (size < 0) {
+            av_log(s, AV_LOG_DEBUG, "header tag size < 0 (%lld) for tag 0x%x\n", size, tag);
+            if (offset > 0 && st->codecpar->block_align) // COMM && SSND
+                goto got_sound;
             return size;
+        }
 
         filesize -= size + 8;
 
@@ -259,12 +263,14 @@ static int aiff_read_header(AVFormatContext *s)
         case MKTAG('C', 'O', 'M', 'M'):     /* Common chunk */
             /* Then for the complete header info */
             st->nb_frames = get_aiff_header(s, size, version);
+            av_log(s, AV_LOG_DEBUG, "header COMM (nb_frames: %lld, offset: %lld)\n", st->nb_frames, offset);
             if (st->nb_frames < 0)
                 return st->nb_frames;
             if (offset > 0) // COMM is after SSND
                 goto got_sound;
             break;
         case MKTAG('I', 'D', '3', ' '):
+            av_log(s, AV_LOG_DEBUG, "header ID3\n");
             position = avio_tell(pb);
             ff_id3v2_read(s, ID3v2_DEFAULT_MAGIC, &id3v2_extra_meta, size);
             if (id3v2_extra_meta)
@@ -278,27 +284,34 @@ static int aiff_read_header(AVFormatContext *s)
                 avio_skip(pb, position + size - avio_tell(pb));
             break;
         case MKTAG('F', 'V', 'E', 'R'):     /* Version chunk */
+            av_log(s, AV_LOG_DEBUG, "header FVER\n");
             version = avio_rb32(pb);
             break;
         case MKTAG('N', 'A', 'M', 'E'):     /* Sample name chunk */
+            av_log(s, AV_LOG_DEBUG, "header NAME\n");
             get_meta(s, "title"    , size);
             break;
         case MKTAG('A', 'U', 'T', 'H'):     /* Author chunk */
+            av_log(s, AV_LOG_DEBUG, "header AUTH\n");
             get_meta(s, "author"   , size);
             break;
         case MKTAG('(', 'c', ')', ' '):     /* Copyright chunk */
+            av_log(s, AV_LOG_DEBUG, "header (c)\n");
             get_meta(s, "copyright", size);
             break;
         case MKTAG('A', 'N', 'N', 'O'):     /* Annotation chunk */
+            av_log(s, AV_LOG_DEBUG, "header ANNO\n");
             get_meta(s, "comment"  , size);
             break;
         case MKTAG('S', 'S', 'N', 'D'):     /* Sampled sound chunk */
+            av_log(s, AV_LOG_DEBUG, "header SSND\n");
             if (size < 8)
                 return AVERROR_INVALIDDATA;
             aiff->data_end = avio_tell(pb) + size;
             offset = avio_rb32(pb);      /* Offset of sound data */
             avio_rb32(pb);               /* BlockSize... don't care */
             offset += avio_tell(pb);    /* Compute absolute data offset */
+            av_log(s, AV_LOG_DEBUG, "SSND: codecpar->block_align=%d, offset=%lld, pb->seekable&AVIO_SEEKABLE_NORMAL=%d\n", st->codecpar->block_align, offset, pb->seekable & AVIO_SEEKABLE_NORMAL);
             if (st->codecpar->block_align && !(pb->seekable & AVIO_SEEKABLE_NORMAL))    /* Assume COMM already parsed */
                 goto got_sound;
             if (!(pb->seekable & AVIO_SEEKABLE_NORMAL)) {
@@ -308,6 +321,7 @@ static int aiff_read_header(AVFormatContext *s)
             avio_skip(pb, size - 8);
             break;
         case MKTAG('w', 'a', 'v', 'e'):
+            av_log(s, AV_LOG_DEBUG, "header wave\n");
             if ((uint64_t)size > (1<<30))
                 return AVERROR_INVALIDDATA;
             if ((ret = ff_get_extradata(s, st->codecpar, pb, size)) < 0)
@@ -334,10 +348,12 @@ static int aiff_read_header(AVFormatContext *s)
             }
             break;
         case MKTAG('C','H','A','N'):
+            av_log(s, AV_LOG_DEBUG, "header CHAN\n");
             if ((ret = ff_mov_read_chan(s, pb, st, size)) < 0)
                 return ret;
             break;
         case MKTAG('A','P','C','M'): /* XA ADPCM compressed sound chunk */
+            av_log(s, AV_LOG_DEBUG, "header APCM\n");
             st->codecpar->codec_id = AV_CODEC_ID_ADPCM_XA;
             aiff->data_end = avio_tell(pb) + size;
             offset = avio_tell(pb) + 8;
@@ -348,9 +364,11 @@ static int aiff_read_header(AVFormatContext *s)
             goto got_sound;
             break;
         case 0:
+            av_log(s, AV_LOG_DEBUG, "header 0\n");
             if (offset > 0 && st->codecpar->block_align) // COMM && SSND
                 goto got_sound;
         default: /* Jump */
+            av_log(s, AV_LOG_DEBUG, "header unknown: 0x%x\n", tag);
             avio_skip(pb, size);
         }
 
@@ -361,11 +379,13 @@ static int aiff_read_header(AVFormatContext *s)
         }
     }
 
+    av_log(s, AV_LOG_DEBUG, "header parsing done without jumping to got_sound\n");
     ret = ff_replaygain_export(st, s->metadata);
     if (ret < 0)
         return ret;
 
 got_sound:
+    av_log(s, AV_LOG_DEBUG, "at got_sound\n");
     if (!st->codecpar->block_align && st->codecpar->codec_id == AV_CODEC_ID_QCELP) {
         av_log(s, AV_LOG_WARNING, "qcelp without wave chunk, assuming full rate\n");
         st->codecpar->block_align = 35;
