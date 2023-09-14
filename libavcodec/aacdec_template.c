@@ -502,11 +502,14 @@ FF_ENABLE_DEPRECATION_WARNINGS
     if (layout)
         av_channel_layout_from_mask(&ac->oc[1].ch_layout, layout);
     else {
+        // FIXME: does this ever make sense? channels can be very weird numbers in some cases like 38 or 42. Should we only copy to avctx if layout != 0?
         ac->oc[1].ch_layout.order       = AV_CHANNEL_ORDER_UNSPEC;
         ac->oc[1].ch_layout.nb_channels = channels;
     }
 
-    av_channel_layout_copy(&avctx->ch_layout, &ac->oc[1].ch_layout);
+    // only copy channel layout to avctx if we think it's more precise than current
+    if (!avctx->ch_layout.order)
+        av_channel_layout_copy(&avctx->ch_layout, &ac->oc[1].ch_layout);
     ac->oc[1].status = oc_type;
 
     if (get_new_frame) {
