@@ -17,8 +17,15 @@
  * License along with FFmpeg; if not, write to the Free Software
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
+#include "config.h"
 
 #include <float.h>
+#if HAVE_IO_H
+#include <io.h>
+#endif
+#if HAVE_UNISTD_H
+#include <unistd.h>
+#endif
 
 #include "libavutil/ffmath.h"
 #include "libavutil/opt.h"
@@ -202,13 +209,27 @@ static av_cold int init(AVFilterContext *ctx)
 static av_cold void uninit(AVFilterContext *ctx)
 {
     WaveFormDataContext *s = ctx->priv;
+    int ret;
 
     if (s->window_pos != 0)
         finish_block(s);
-    if (s->avio_context) {
+    // uninit can run even if config_output was not called
+    if (s->chstats && s->avio_context) {
         // write total block count in headers (5th field after 4x32b)
         avio_seek(s->avio_context, 4 * 4, SEEK_SET);
         avio_wl32(s->avio_context, (uint32_t)s->total_blocks);
+        avio_closep(&s->avio_context);
+
+        if (s->total_blocks == 0) {
+            av_log(ctx, AV_LOG_ERROR, "Audio input configured but no audio blocks were processed, deleting output file!\n");
+            ret = unlink(s->file_str);
+            if (ret < 0) {
+                av_log(ctx, AV_LOG_ERROR, "Error while deleting %s\n", s->file_str);
+            }
+        } else {
+            av_log(ctx, AV_LOG_DEBUG, "Total audio blocks processed: %lld\n", s->total_blocks);
+        }
+    } else if (s->avio_context) {
         avio_closep(&s->avio_context);
     }
 
