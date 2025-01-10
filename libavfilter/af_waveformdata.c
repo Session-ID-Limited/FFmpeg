@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023 Tadas Dailyda
+ * Copyright (c) 2023-2025 Tadas Dailyda
  *
  * This file is part of FFmpeg.
  *
@@ -28,11 +28,11 @@
 #endif
 
 #include "libavutil/ffmath.h"
+#include "libavutil/mem.h"
 #include "libavutil/opt.h"
 #include "libavformat/avio.h"
 #include "audio.h"
 #include "avfilter.h"
-#include "internal.h"
 
 enum OutputBits {
     OUTPUT_BITS_8,
